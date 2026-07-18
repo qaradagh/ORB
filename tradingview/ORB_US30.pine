@@ -1,77 +1,118 @@
 //@version=6
 // ═══════════════════════════════════════════════════════════════════════════
-//  ORB US30 — استراتژی شکستِ رنجِ بازشدن (Opening Range Breakout)
-//  فاز ۱: اندیکاتور تریدینگ‌ویو — قابل استفاده روی لایو (با آلرت) و بک‌تست با Bar Replay
+//  ORB US30 — Opening Range Breakout
+//  Phase 1: TradingView indicator — usable live (alerts) and backtestable
+//  with Bar Replay.
 //
-//  قوانین (مطابق سند US30-ORB-Strategy-Guide-FA):
-//   • رنج بازشدن = سقف و کفِ ۳ کندلِ ۵ دقیقه‌ای اول از بازشدن نقدی نیویورک (۰۹:۳۰ NY)
-//   • ورود: اولین کندل ۵ دقیقه‌ای که «بیرون رنج کلوز کند» (لمس کافی نیست) — ورود روی کلوز
-//   • استاپ: وسط رنج (۵۰٪) یا نسخه‌ی محافظه‌کار: طرف مقابل رنج
-//   • تارگت: 3R (حالت A) — یا حالت B: نصف در 2R + استاپ به ورود + تریل پشت کف/سقف کندل قبل
-//   • سقف ۲ معامله در روز؛ ری‌انتری فقط بعد از استاپ‌خوردن
-//   • پنجره ورود: ۰۹:۳۰ تا ۱۱:۳۰ نیویورک (۱۵:۳۰–۱۷:۳۰ آلمان) — بعدش سیگنال وجود ندارد
-//   • فیلتر ۱: رنجِ بزرگ‌تر از یک‌سومِ ATR روزانه (۱۴) ⇒ روز ممنوع
-//   • فیلتر ۲: روزهای خبری (FOMC/CPI/NFP) ⇒ سوییچ دستی «روز خبری»
-//   • پایان جلسه (۱۶:۰۰ NY): هر پوزیشن باز، کلوز اجباری می‌شود
+//  Rules (per the US30-ORB-Strategy-Guide-FA document):
+//   • Opening range = high/low of the first three 5-min candles from the
+//     NY cash open (09:30 America/New_York)
+//   • Entry: first 5-min candle that CLOSES outside the range (touch is not
+//     enough) — entry at that candle's close
+//   • Stop: middle of the range (50%), or conservative option: opposite side
+//   • Target: 3R (Mode A) — or Mode B: half off at +2R, stop to entry,
+//     trail the rest behind the previous candle's low/high
+//   • Max 2 trades per day; re-entry only after a stop-out
+//   • Entry window: 09:30–11:30 New York — no signals after that
+//   • Filter 1: range larger than 1/3 of the daily ATR(14) ⇒ skip the day
+//   • Filter 2: news days (FOMC/CPI/NFP) ⇒ manual "news day" switch
+//   • Session end (16:00 NY): any open position is force-closed
 //
-//  نکته: همه‌ی محاسبات فقط روی «کندل بسته‌شده» انجام می‌شود ⇒ بدون ری‌پینت،
-//  و نتیجه‌ی لایو، ریپلی و هیستوری یکسان است.
+//  All calculations run on CONFIRMED (closed) bars only ⇒ no repainting;
+//  live, history, and bar replay all produce identical results.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("ORB US30 — شکست رنج بازشدن", "ORB US30", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 300)
+indicator("ORB US30 — Opening Range Breakout", "ORB US30", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 300)
 
-// ─────────────────────────── ورودی‌ها ───────────────────────────
-grpS = "زمان‌بندی / Session"
-tz        = input.string("America/New_York", "منطقه زمانی مبنا", group = grpS, tooltip = "مبنا همیشه بازشدنِ نقدی نیویورک (۰۹:۳۰) است. تغییر ساعت تابستانی خودکار اعمال می‌شود؛ لازم نیست ساعت آلمان را دستی جابه‌جا کنی.")
-sessRange = input.session("0930-0945", "رنج بازشدن — ۱۵ دقیقه‌ی اول", group = grpS)
-sessWin   = input.session("0930-1130", "پنجره‌ی ورود (معادل ۱۵:۳۰ تا ۱۷:۳۰ آلمان)", group = grpS)
-sessDay   = input.session("0930-1600", "جلسه‌ی روز — پایانش کلوز اجباری پوزیشن است", group = grpS)
+// ─────────────────────────── Inputs ───────────────────────────
+grpS = "Session"
+tz        = input.string("America/New_York", "Anchor timezone", group = grpS, tooltip = "Everything is anchored to the NY cash open (09:30). Daylight-saving changes are handled automatically — no manual adjustment needed.")
+sessRange = input.session("0930-0945", "Opening range — first 15 minutes", group = grpS)
+sessWin   = input.session("0930-1130", "Entry window (= 15:30–17:30 Germany)", group = grpS)
+sessDay   = input.session("0930-1600", "Day session — position force-closed at its end", group = grpS)
 
-grpR = "قوانین معامله / Rules"
-stopModeS   = input.string("۵۰٪ رنج (پیش‌فرض)", "محل استاپ", options = ["۵۰٪ رنج (پیش‌فرض)", "طرف مقابل رنج (محافظه‌کارتر)"], group = grpR)
-targetR     = input.float(3.0, "تارگت بر حسب R", minval = 0.5, step = 0.5, group = grpR)
-maxTrades   = input.int(2, "سقف معامله در روز", minval = 1, maxval = 5, group = grpR)
-reAfterLoss = input.bool(true, "ری‌انتری فقط بعد از استاپ‌خوردن", group = grpR, tooltip = "طبق سند: سیگنال اول + یک ری‌انتری بعد از استاپ. اگر خاموش شود، تا سقف روزانه هر سیگنال معتبر گرفته می‌شود.")
-worstCase   = input.bool(true, "استاپ و تارگت در یک کندل ⇒ باخت حساب شود", group = grpR, tooltip = "در دیتای ۵ دقیقه‌ای معلوم نیست اول کدام خورده است؛ فرض بدبینانه آمار بک‌تست را واقعی‌تر نگه می‌دارد.")
+grpR = "Trade rules"
+stopModeS   = input.string("50% of range", "Stop placement", options = ["50% of range", "Opposite side of range"], group = grpR)
+targetR     = input.float(3.0, "Target (R multiple)", minval = 0.5, step = 0.5, group = grpR)
+maxTrades   = input.int(2, "Max trades per day", minval = 1, maxval = 5, group = grpR)
+reAfterLoss = input.bool(true, "Re-entry only after a losing trade", group = grpR, tooltip = "Per the guide: first signal + one re-entry after a stop-out. If disabled, every valid signal is taken up to the daily cap.")
+worstCase   = input.bool(true, "Same-bar stop & target ⇒ count as loss", group = grpR, tooltip = "On 5-min data the intra-bar order of events is unknown; the pessimistic assumption keeps backtest stats honest.")
 
-grpM = "مدیریت / Management"
-mgmtModeS = input.string("A — تارگت ثابت 3R", "حالت مدیریت", options = ["A — تارگت ثابت 3R", "B — نصف در 2R + تریل تا آخر روز"], group = grpM)
-trailLen  = input.int(1, "تریل پشت کف/سقفِ چند کندلِ قبل", minval = 1, maxval = 10, group = grpM)
+grpM = "Management"
+mgmtModeS = input.string("A — Fixed target (3R)", "Management mode", options = ["A — Fixed target (3R)", "B — Half at 2R + trail"], group = grpM)
+trailLen  = input.int(1, "Trail behind low/high of N previous candles", minval = 1, maxval = 10, group = grpM)
 
-grpF = "فیلترها / Filters"
-useAtrF   = input.bool(true, "فیلتر ATR — رنجِ بزرگ‌تر از سهم ATR روزانه ⇒ روز ممنوع", group = grpF)
-atrRatio  = input.float(0.333, "حداکثر رنج نسبت به ATR روزانه", minval = 0.05, maxval = 1.0, step = 0.001, group = grpF)
-atrLen    = input.int(14, "طول ATR روزانه", minval = 1, group = grpF)
-newsOff   = input.bool(false, "امروز روز خبری است (FOMC/CPI/NFP) — ورود جدید ممنوع", group = grpF, tooltip = "سوییچ دستی. صبحِ روزهای خبری روشنش کن و فردایش خاموش. در بک‌تست ریپلی، روزهای خبری را جداگانه یادداشت کن.")
-statsFrom = input.time(timestamp("2024-01-01T00:00:00"), "شروع سیگنال و آمار از تاریخ", group = grpF, tooltip = "برای بک‌تست با ریپلی: فقط از این تاریخ به بعد معامله شبیه‌سازی و در آمار شمرده می‌شود.")
+grpF = "Filters"
+useAtrF   = input.bool(true, "ATR filter — range too large vs daily ATR ⇒ skip day", group = grpF)
+atrRatio  = input.float(0.333, "Max range as a fraction of daily ATR", minval = 0.05, maxval = 1.0, step = 0.001, group = grpF)
+atrLen    = input.int(14, "Daily ATR length", minval = 1, group = grpF)
+newsOff   = input.bool(false, "News day (FOMC/CPI/NFP) — no new entries", group = grpF, tooltip = "Manual switch. Turn it on in the morning of news days and off the next day. For replay backtests, log news days separately.")
+statsFrom = input.time(timestamp("2024-01-01T00:00:00"), "Signals & stats start date", group = grpF, tooltip = "For replay backtesting: trades are only simulated and counted from this date onward.")
 
-grpV = "نمایش / Display"
-showBox   = input.bool(true, "کادر رنج بازشدن", group = grpV)
-showBg    = input.bool(true, "هایلایت پنجره‌ی ورود", group = grpV)
-showTable = input.bool(true, "جدول آمار", group = grpV)
-tablePosS = input.string("بالا-راست", "محل جدول", options = ["بالا-راست", "بالا-چپ", "پایین-راست", "پایین-چپ"], group = grpV)
+grpD = "Display — opening range"
+showBox        = input.bool(true, "Show range box", group = grpD)
+boxBgColor     = input.color(color.new(#2962ff, 88), "Box background", group = grpD)
+boxBorderColor = input.color(color.new(#2962ff, 40), "Box border color", group = grpD)
+boxBorderStyle = input.string("Solid", "Box border style", options = ["Solid", "Dashed", "Dotted"], group = grpD)
+boxBorderWidth = input.int(1, "Box border width", minval = 1, maxval = 4, group = grpD)
+rangeLineColor = input.color(#2962ff, "Range high/low line color", group = grpD)
+rangeLineStyle = input.string("Solid", "Range high/low line style", options = ["Solid", "Dashed", "Dotted"], group = grpD)
+rangeLineWidth = input.int(2, "Range high/low line width", minval = 1, maxval = 4, group = grpD)
+showMid        = input.bool(true, "Show range midline (default stop level)", group = grpD)
+midLineColor   = input.color(#787b86, "Midline color", group = grpD)
+midLineStyle   = input.string("Dashed", "Midline style", options = ["Solid", "Dashed", "Dotted"], group = grpD)
+midLineWidth   = input.int(1, "Midline width", minval = 1, maxval = 4, group = grpD)
+extendModeS    = input.string("To session end", "Extend range lines to the right", options = ["To window close", "To session end", "Fixed number of bars", "Extend right (infinite)"], group = grpD)
+extendBars     = input.int(50, "Fixed extension length (bars)", minval = 1, maxval = 500, group = grpD, tooltip = "Only used when the extension mode is 'Fixed number of bars'.")
 
-// رنگ‌ها
-colBull  = #089981
-colBear  = #f23645
-colRange = #2962ff
+grpT = "Display — trade levels"
+entryLineColor   = input.color(#787b86, "Entry line color", group = grpT)
+entryLineStyle   = input.string("Solid", "Entry line style", options = ["Solid", "Dashed", "Dotted"], group = grpT)
+stopLineColor    = input.color(#f23645, "Stop line color", group = grpT)
+stopLineStyle    = input.string("Solid", "Stop line style", options = ["Solid", "Dashed", "Dotted"], group = grpT)
+targetLineColor  = input.color(#089981, "Target line color", group = grpT)
+targetLineStyle  = input.string("Dashed", "Target line style", options = ["Solid", "Dashed", "Dotted"], group = grpT)
+partialLineColor = input.color(#ff9800, "2R partial line color (Mode B)", group = grpT)
+partialLineStyle = input.string("Dotted", "2R partial line style", options = ["Solid", "Dashed", "Dotted"], group = grpT)
+tradeLineWidth   = input.int(2, "Trade lines width", minval = 1, maxval = 4, group = grpT)
+
+grpV = "Display — general"
+bullColor = input.color(#089981, "Bullish color (signals & labels)", group = grpV)
+bearColor = input.color(#f23645, "Bearish color (signals & labels)", group = grpV)
+showBg    = input.bool(true, "Highlight entry window", group = grpV)
+bgWinColor = input.color(color.new(#2962ff, 96), "Entry window background", group = grpV)
+showTable = input.bool(true, "Show stats table", group = grpV)
+tablePosS = input.string("Top right", "Table position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = grpV)
+
 colGray  = #787b86
 colAmber = #ff9800
+colRangeAccent = #2962ff
 
-// ─────────────────────── سری‌های سراسری ───────────────────────
+// ─────────────────────── Global series ───────────────────────
 inRange = not na(time(timeframe.period, sessRange, tz))
 inWin   = not na(time(timeframe.period, sessWin, tz))
 inDay   = not na(time(timeframe.period, sessDay, tz))
 
-// ATR روزانه‌ی بسته‌شده (بدون ری‌پینت)
+// Last CLOSED daily ATR (non-repainting)
 dailyAtr = request.security(syminfo.tickerid, "D", ta.atr(atrLen)[1], lookahead = barmerge.lookahead_on)
 
 trailLow  = ta.lowest(low, trailLen)[1]
 trailHigh = ta.highest(high, trailLen)[1]
 
 mgmtB   = str.startswith(mgmtModeS, "B")
-stopMid = str.contains(stopModeS, "۵۰")
+stopMid = stopModeS == "50% of range"
 
-// ─────────────────────── وضعیت روز و پوزیشن ───────────────────────
+extToWin = extendModeS == "To window close"
+extToDay = extendModeS == "To session end"
+extFixed = extendModeS == "Fixed number of bars"
+extInf   = extendModeS == "Extend right (infinite)"
+
+f_lstyle(string s) =>
+    s == "Solid" ? line.style_solid : s == "Dashed" ? line.style_dashed : line.style_dotted
+
+f_r(float r) =>
+    na(r) ? "—" : (r > 0 ? "+" : "") + str.tostring(r, "#.##") + "R"
+
+// ─────────────────────── Day & position state ───────────────────────
 var float orH = na
 var float orL = na
 var bool  rangeDone = false
@@ -80,7 +121,7 @@ var int   tradesToday = 0
 var float lastTradeR = na
 var int   rangeStartIdx = na
 
-var int   dir = 0          // 0=بدون پوزیشن  1=لانگ  -1=شورت
+var int   dir = 0          // 0 = flat, 1 = long, -1 = short
 var float entryP = na
 var float stopP = na
 var float risk = na
@@ -89,7 +130,7 @@ var float partialP = na
 var bool  halfDone = false
 var float bookedR = 0.0
 
-// آمار تجمعی (برای بک‌تست با ریپلی)
+// Cumulative stats (for replay backtesting)
 var int   nT = 0
 var int   nW = 0
 var int   nL = 0
@@ -98,7 +139,7 @@ var int   nDays = 0
 var int   nSkip = 0
 var int   noTradeDays = 0
 
-// شیءهای گرافیکی روز/معامله‌ی جاری
+// Drawing handles for the current day / trade
 var box  bx  = na
 var line lnH = na
 var line lnL = na
@@ -108,32 +149,29 @@ var line tlS = na
 var line tlT = na
 var line tlP = na
 
-// خروجی‌های این کندل (برای آلرت و شکل)
+// Per-bar outputs (for alerts and shapes)
 bool longEntryPlot  = false
 bool shortEntryPlot = false
 bool exitPlot       = false
 bool partialPlot    = false
 
-f_r(float r) =>
-    na(r) ? "—" : (r > 0 ? "+" : "") + str.tostring(r, "#.##") + "R"
-
-// ─────────────────────── منطق اصلی (فقط کندل بسته‌شده) ───────────────────────
+// ─────────────────────── Core logic (confirmed bars only) ───────────────────────
 if barstate.isconfirmed
     bool newDay = inRange and not inRange[1]
     bool eodNow = not inDay and inDay[1]
 
-    float closedR  = na
+    float closedR   = na
     float exitPrice = na
     string exitTxt  = na
 
-    // ۱) کلوز اجباری پایان روز (یا پوزیشن جامانده تا روز بعد)
+    // 1) Forced close at session end (or a position left over into a new day)
     if dir != 0 and (newDay or eodNow)
         float dF = dir == 1 ? 1.0 : -1.0
         closedR   := bookedR + dF * (open - entryP) / risk * (halfDone ? 0.5 : 1.0)
         exitPrice := open
-        exitTxt   := "پایان روز"
+        exitTxt   := "EOD"
 
-    // ۲) شروع روز جدید — ریست وضعیت
+    // 2) New day — reset state
     if newDay
         orH := high
         orL := low
@@ -150,7 +188,7 @@ if barstate.isconfirmed
         orH := math.max(nz(orH, high), high)
         orL := math.min(nz(orL, low), low)
     else if inRange[1] and not rangeDone and not na(orH)
-        // ۳) رنج کامل شد — فیلتر ATR و رسم
+        // 3) Range complete — ATR filter and drawings
         rangeDone := true
         float rng = orH - orL
         dayOk := not (useAtrF and not na(dailyAtr) and rng > dailyAtr * atrRatio)
@@ -158,16 +196,18 @@ if barstate.isconfirmed
             nDays += 1
             if not dayOk
                 nSkip += 1
-        int x1 = nz(rangeStartIdx, bar_index - 3)
+        int xL = bar_index - 1
+        int xR = extFixed ? xL + extendBars : bar_index
         if showBox
-            bx := box.new(x1, orH, bar_index - 1, orL, border_color = color.new(colRange, 40), bgcolor = color.new(colRange, 88))
-        lnH := line.new(bar_index - 1, orH, bar_index, orH, color = colRange, width = 2)
-        lnL := line.new(bar_index - 1, orL, bar_index, orL, color = colRange, width = 2)
-        lnM := line.new(bar_index - 1, (orH + orL) / 2, bar_index, (orH + orL) / 2, color = colGray, style = line.style_dashed)
+            bx := box.new(nz(rangeStartIdx, bar_index - 3), orH, xL, orL, border_color = boxBorderColor, border_style = f_lstyle(boxBorderStyle), border_width = boxBorderWidth, bgcolor = boxBgColor)
+        lnH := line.new(xL, orH, xR, orH, color = rangeLineColor, style = f_lstyle(rangeLineStyle), width = rangeLineWidth, extend = extInf ? extend.right : extend.none)
+        lnL := line.new(xL, orL, xR, orL, color = rangeLineColor, style = f_lstyle(rangeLineStyle), width = rangeLineWidth, extend = extInf ? extend.right : extend.none)
+        if showMid
+            lnM := line.new(xL, (orH + orL) / 2, xR, (orH + orL) / 2, color = midLineColor, style = f_lstyle(midLineStyle), width = midLineWidth, extend = extInf ? extend.right : extend.none)
         if not dayOk
-            label.new(bar_index, orH, "⛔ روز ممنوع — رنج > " + str.tostring(atrRatio, "#.##") + "×ATR", style = label.style_label_down, color = color.new(colAmber, 20), textcolor = color.white, size = size.small)
+            label.new(bar_index, orH, "⛔ Day skipped — range > " + str.tostring(atrRatio, "#.##") + "×ATR", style = label.style_label_down, color = color.new(colAmber, 20), textcolor = color.white, size = size.small)
 
-    // ۴) مدیریت پوزیشن باز (استاپ / تارگت / تریل)
+    // 4) Manage the open position (stop / target / trail)
     if dir != 0 and na(closedR)
         float dF = dir == 1 ? 1.0 : -1.0
         if mgmtB and halfDone
@@ -177,26 +217,26 @@ if barstate.isconfirmed
         bool hitPar = dir == 1 ? high >= partialP : low <= partialP
 
         if not mgmtB
-            // حالت A — تارگت ثابت
+            // Mode A — fixed target
             if hitSL and (not hitTP or worstCase)
                 closedR := -1.0
                 exitPrice := stopP
-                exitTxt := "استاپ"
+                exitTxt := "Stop"
             else if hitTP
                 closedR := targetR
                 exitPrice := tgtP
-                exitTxt := "تارگت"
+                exitTxt := "Target"
         else
-            // حالت B — نصف در 2R + تریل
+            // Mode B — half at 2R + trail
             if not halfDone
                 if hitSL and (not hitPar or worstCase)
                     closedR := -1.0
                     exitPrice := stopP
-                    exitTxt := "استاپ"
+                    exitTxt := "Stop"
                 else if hitPar and hitSL
                     closedR := 1.0
                     exitPrice := entryP
-                    exitTxt := "نصف 2R + سربه‌سر"
+                    exitTxt := "Half @2R + BE"
                 else if hitPar
                     bookedR := 1.0
                     halfDone := true
@@ -206,9 +246,9 @@ if barstate.isconfirmed
                 if hitSL
                     closedR := bookedR + dF * (stopP - entryP) / risk * 0.5
                     exitPrice := stopP
-                    exitTxt := "تریل"
+                    exitTxt := "Trail"
 
-    // ۵) ثبت نتیجه‌ی معامله‌ی بسته‌شده
+    // 5) Book the closed trade
     if not na(closedR)
         nT += 1
         sumR += closedR
@@ -218,7 +258,7 @@ if barstate.isconfirmed
             nL += 1
         lastTradeR := closedR
         exitPlot := true
-        label.new(bar_index, closedR >= 0 ? high : low, (closedR >= 0 ? "✔ " : "✘ ") + exitTxt + " " + f_r(closedR), style = closedR >= 0 ? label.style_label_down : label.style_label_up, color = closedR > 0.0001 ? color.new(colBull, 15) : closedR < -0.0001 ? color.new(colBear, 15) : color.new(colGray, 15), textcolor = color.white, size = size.small)
+        label.new(bar_index, closedR >= 0 ? high : low, (closedR >= 0 ? "✔ " : "✘ ") + exitTxt + " " + f_r(closedR), style = closedR >= 0 ? label.style_label_down : label.style_label_up, color = closedR > 0.0001 ? color.new(bullColor, 15) : closedR < -0.0001 ? color.new(bearColor, 15) : color.new(colGray, 15), textcolor = color.white, size = size.small)
         if not na(tlE)
             line.set_x2(tlE, bar_index)
         if not na(tlS)
@@ -235,7 +275,7 @@ if barstate.isconfirmed
         halfDone := false
         bookedR := 0.0
 
-    // ۶) ورود — اولین کلوز بیرون رنج، داخل پنجره
+    // 6) Entry — first close outside the range, inside the window
     bool allowedCount = tradesToday == 0 or (tradesToday < maxTrades and (not reAfterLoss or (not na(lastTradeR) and lastTradeR < 0)))
     bool canEnter = rangeDone and inWin and dayOk and not newsOff and dir == 0 and time >= statsFrom and allowedCount
     bool longSig  = canEnter and close > orH
@@ -253,17 +293,19 @@ if barstate.isconfirmed
         tradesToday += 1
         longEntryPlot := longSig
         shortEntryPlot := shortSig
-        tlE := line.new(bar_index, entryP, bar_index, entryP, color = colGray, width = 1)
-        tlS := line.new(bar_index, stopP, bar_index, stopP, color = colBear, width = 2)
-        tlT := line.new(bar_index, tgtP, bar_index, tgtP, color = colBull, width = 2, style = line.style_dashed)
+        tlE := line.new(bar_index, entryP, bar_index, entryP, color = entryLineColor, style = f_lstyle(entryLineStyle), width = tradeLineWidth)
+        tlS := line.new(bar_index, stopP, bar_index, stopP, color = stopLineColor, style = f_lstyle(stopLineStyle), width = tradeLineWidth)
+        tlT := line.new(bar_index, tgtP, bar_index, tgtP, color = targetLineColor, style = f_lstyle(targetLineStyle), width = tradeLineWidth)
         if mgmtB
-            tlP := line.new(bar_index, partialP, bar_index, partialP, color = colAmber, width = 1, style = line.style_dotted)
+            tlP := line.new(bar_index, partialP, bar_index, partialP, color = partialLineColor, style = f_lstyle(partialLineStyle), width = tradeLineWidth)
 
-    // ۷) امتداد خطوط روز و معامله
-    if not na(lnH) and inDay
+    // 7) Extend day and trade lines
+    bool extendNow = extToWin ? inWin : extToDay ? inDay : false
+    if not na(lnH) and extendNow
         line.set_x2(lnH, bar_index)
         line.set_x2(lnL, bar_index)
-        line.set_x2(lnM, bar_index)
+        if not na(lnM)
+            line.set_x2(lnM, bar_index)
     if dir != 0
         line.set_x2(tlE, bar_index)
         line.set_x2(tlS, bar_index)
@@ -273,51 +315,51 @@ if barstate.isconfirmed
         if not na(tlP)
             line.set_x2(tlP, bar_index)
 
-    // ۸) روز بدون سیگنال (پنجره بسته شد و معامله‌ای نشد) — خودش یکی از خروجی‌های معتبر سیستم است
+    // 8) No-signal day (window closed without a trade) — a valid system outcome
     if inWin[1] and not inWin and rangeDone and dayOk and not newsOff and tradesToday == 0 and dir == 0 and time >= statsFrom
         noTradeDays += 1
-        label.new(bar_index, high, "بدون معامله", style = label.style_label_down, color = color.new(colGray, 40), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, high, "No trade", style = label.style_label_down, color = color.new(colGray, 40), textcolor = color.white, size = size.tiny)
 
-// ─────────────────────── نمایش ───────────────────────
-bgcolor(showBg and inWin ? color.new(colRange, 96) : na, title = "پنجره ورود")
-plotshape(longEntryPlot, title = "ورود لانگ", style = shape.triangleup, location = location.belowbar, color = colBull, size = size.small, text = "ORB", textcolor = colBull)
-plotshape(shortEntryPlot, title = "ورود شورت", style = shape.triangledown, location = location.abovebar, color = colBear, size = size.small, text = "ORB", textcolor = colBear)
+// ─────────────────────── Plots ───────────────────────
+bgcolor(showBg and inWin ? bgWinColor : na, title = "Entry window")
+plotshape(longEntryPlot, title = "Long entry", style = shape.triangleup, location = location.belowbar, color = bullColor, size = size.small, text = "ORB", textcolor = bullColor)
+plotshape(shortEntryPlot, title = "Short entry", style = shape.triangledown, location = location.abovebar, color = bearColor, size = size.small, text = "ORB", textcolor = bearColor)
 
-// ─────────────────────── جدول آمار ───────────────────────
-tPos = tablePosS == "بالا-راست" ? position.top_right : tablePosS == "بالا-چپ" ? position.top_left : tablePosS == "پایین-راست" ? position.bottom_right : position.bottom_left
+// ─────────────────────── Stats table ───────────────────────
+tPos = tablePosS == "Top right" ? position.top_right : tablePosS == "Top left" ? position.top_left : tablePosS == "Bottom right" ? position.bottom_right : position.bottom_left
 var table tbl = showTable ? table.new(tPos, 2, 12, border_width = 1, border_color = color.new(colGray, 70), bgcolor = color.new(colGray, 92)) : na
 
 if showTable and barstate.islast
-    string statusTxt = dir == 1 ? "لانگ باز " + f_r(bookedR) : dir == -1 ? "شورت باز " + f_r(bookedR) : inRange ? "رنج در حال شکل‌گیری" : rangeDone and inWin ? (not dayOk ? "روز ممنوع (ATR)" : newsOff ? "روز خبری — بدون ورود" : "منتظر کلوز بیرون رنج") : "خارج از پنجره"
+    string statusTxt = dir == 1 ? "Long open " + f_r(bookedR) : dir == -1 ? "Short open " + f_r(bookedR) : inRange ? "Building range" : rangeDone and inWin ? (not dayOk ? "Blocked (ATR filter)" : newsOff ? "News day — no entries" : "Waiting for breakout close") : "Outside window"
     float wr = nT > 0 ? nW * 100.0 / nT : na
-    table.cell(tbl, 0, 0, "ORB US30", text_color = color.white, bgcolor = colRange, text_size = size.small)
-    table.cell(tbl, 1, 0, mgmtB ? "حالت B" : "حالت A", text_color = color.white, bgcolor = colRange, text_size = size.small)
+    table.cell(tbl, 0, 0, "ORB US30", text_color = color.white, bgcolor = colRangeAccent, text_size = size.small)
+    table.cell(tbl, 1, 0, mgmtB ? "Mode B" : "Mode A", text_color = color.white, bgcolor = colRangeAccent, text_size = size.small)
     if timeframe.period != "5"
-        table.cell(tbl, 0, 1, "⚠ تایم‌فریم باید ۵ دقیقه باشد", text_color = color.white, bgcolor = colBear, text_size = size.small)
-        table.cell(tbl, 1, 1, timeframe.period, text_color = color.white, bgcolor = colBear, text_size = size.small)
-    table.cell(tbl, 0, 2, "معامله‌ها", text_color = chart.fg_color, text_size = size.small)
+        table.cell(tbl, 0, 1, "⚠ Use the 5-min timeframe", text_color = color.white, bgcolor = bearColor, text_size = size.small)
+        table.cell(tbl, 1, 1, timeframe.period, text_color = color.white, bgcolor = bearColor, text_size = size.small)
+    table.cell(tbl, 0, 2, "Trades", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 2, str.tostring(nT), text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 3, "برد / باخت", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 3, "Wins / Losses", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 3, str.tostring(nW) + " / " + str.tostring(nL), text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 4, "وین‌ریت", text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 1, 4, na(wr) ? "—" : str.tostring(wr, "#.#") + "٪", text_color = na(wr) ? chart.fg_color : wr >= 100.0 / (1.0 + targetR) ? colBull : colBear, text_size = size.small)
-    table.cell(tbl, 0, 5, "مجموع R", text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 1, 5, f_r(sumR), text_color = sumR > 0 ? colBull : sumR < 0 ? colBear : chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 6, "میانگین R", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 4, "Win rate", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 1, 4, na(wr) ? "—" : str.tostring(wr, "#.#") + "%", text_color = na(wr) ? chart.fg_color : wr >= 100.0 / (1.0 + targetR) ? bullColor : bearColor, text_size = size.small)
+    table.cell(tbl, 0, 5, "Total R", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 1, 5, f_r(sumR), text_color = sumR > 0 ? bullColor : sumR < 0 ? bearColor : chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 6, "Avg R / trade", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 6, nT > 0 ? f_r(sumR / nT) : "—", text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 7, "روزهای بررسی‌شده", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 7, "Days evaluated", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 7, str.tostring(nDays), text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 8, "روز ممنوع (ATR)", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 8, "Skipped (ATR)", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 8, str.tostring(nSkip), text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 9, "روز بدون سیگنال", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 9, "No-signal days", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 9, str.tostring(noTradeDays), text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 10, "امروز: معامله / وضعیت", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 10, "Today: trades / status", text_color = chart.fg_color, text_size = size.small)
     table.cell(tbl, 1, 10, str.tostring(tradesToday) + " — " + statusTxt, text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 0, 11, "آخرین معامله", text_color = chart.fg_color, text_size = size.small)
-    table.cell(tbl, 1, 11, f_r(lastTradeR), text_color = na(lastTradeR) ? chart.fg_color : lastTradeR > 0 ? colBull : lastTradeR < 0 ? colBear : chart.fg_color, text_size = size.small)
+    table.cell(tbl, 0, 11, "Last trade", text_color = chart.fg_color, text_size = size.small)
+    table.cell(tbl, 1, 11, f_r(lastTradeR), text_color = na(lastTradeR) ? chart.fg_color : lastTradeR > 0 ? bullColor : lastTradeR < 0 ? bearColor : chart.fg_color, text_size = size.small)
 
-// ─────────────────────── آلرت‌ها (برای لایو) ───────────────────────
-alertcondition(longEntryPlot,  "ORB — ورود لانگ",      "ORB LONG @ {{close}} — کندل ۵ دقیقه بالای سقف رنج کلوز کرد. استاپ و تارگت روی چارت.")
-alertcondition(shortEntryPlot, "ORB — ورود شورت",      "ORB SHORT @ {{close}} — کندل ۵ دقیقه زیر کف رنج کلوز کرد. استاپ و تارگت روی چارت.")
-alertcondition(partialPlot,    "ORB — نصف در 2R",      "ORB: قیمت به +2R رسید — نصف پوزیشن خارج، استاپ به نقطه ورود.")
-alertcondition(exitPlot,       "ORB — بسته شدن معامله", "ORB: معامله بسته شد (استاپ / تارگت / تریل / پایان روز).")
+// ─────────────────────── Alerts (for live trading) ───────────────────────
+alertcondition(longEntryPlot,  "ORB — Long entry",   "ORB LONG @ {{close}} — 5-min candle closed above the range high. Stop and target are on the chart.")
+alertcondition(shortEntryPlot, "ORB — Short entry",  "ORB SHORT @ {{close}} — 5-min candle closed below the range low. Stop and target are on the chart.")
+alertcondition(partialPlot,    "ORB — Half at 2R",   "ORB: price reached +2R — half position off, stop moved to entry.")
+alertcondition(exitPlot,       "ORB — Trade closed", "ORB: trade closed (stop / target / trail / end of day).")
